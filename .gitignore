@@ -1,0 +1,45 @@
+# Telegram session files (SENSITIVE - account credentials)
+*.session
+*.session-journal
+tdlib_*/
+
+# Bot & account credentials (SENSITIVE)
+.account_configs/
+.env
+*.env
+
+# Claude Code local settings
+.claude/
+
+# Web app credentials
+web/users.json
+
+# Unknown/temp files
+0
+
+# Build output
+tg_uploader/build/
+build/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.backup
+
+# Database & runtime data
+data/scanner.db
+data/thumbs/
+banned_ip_cache.json
+banned_ip_report.html
+banned_ip_report.json
+
+# Temporary files
+*.tmp
+.tg_fixbig_*
+
+# OS
+.DS_Store
+Thumbs.db
