@@ -4,6 +4,13 @@
 #include <string>
 #include <cstdint>
 
+struct ChannelScanResult {
+    bool ok = false;
+    int inserted = 0;
+    std::string account_name;
+    std::string error;
+};
+
 struct VideoRecord {
     int64_t message_id = 0;
     int64_t url_id = 0;
@@ -30,6 +37,17 @@ void record_uploaded_video(const std::string& db_path, const std::string& thumb_
                            const std::string& caption_text, const std::string& thumb_src_path,
                            int64_t url_id_override = -1);
 
+// Run the same channel scan used by the CLI. The backup path uses this to
+// refresh scanner.db before copying, so uploaded messages that were not
+// recorded locally can still be discovered from the channel history.
+ChannelScanResult scan_account_channel(const std::string& account_name,
+                                       bool resume,
+                                       bool full,
+                                       bool fetch_thumbnails = true);
+ChannelScanResult scan_source_channel_for_backup(const std::string& source_channel_id,
+                                                 bool full,
+                                                 bool fetch_thumbnails = false);
+
 class ChannelScanner {
 public:
     ChannelScanner(TdClient& client, const std::string& db_path, const std::string& thumb_dir);
@@ -37,7 +55,7 @@ public:
 
     // Run scan: returns count of new records inserted
     // resume=true: continue from checkpoint; full=true: full scan from newest
-    int run(int64_t chat_id, bool resume, bool full);
+    int run(int64_t chat_id, bool resume, bool full, bool fetch_thumbnails = true);
 
     // Re-download thumbnails. force=true: re-download ALL (replace video covers with photos)
     // range: search ±N messages around each video for matching photo

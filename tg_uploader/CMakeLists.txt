@@ -18,6 +18,12 @@ find_package(nlohmann_json REQUIRED)
 # libcurl for Bot API HTTP requests
 find_package(CURL REQUIRED)
 
+# OpenSSL for HS256 JWT verification (used by the embedded web server)
+find_package(OpenSSL REQUIRED)
+
+# Threads for cpp-httplib's thread pool
+find_package(Threads REQUIRED)
+
 add_executable(tg_uploader
     src/main.cpp
     src/config.cpp
@@ -30,7 +36,21 @@ add_executable(tg_uploader
     src/scanner.cpp
     src/bot_client.cpp
     src/bot_uploader.cpp
+    src/web_server.cpp
+    src/log_tee.cpp
+    src/jwt_verify.cpp
+    src/net_monitor.cpp
+    src/user_auth.cpp
+    src/job_history.cpp
+    src/scheduler.cpp
+    src/backup.cpp
+    src/search_api.cpp
+    src/recorder_api.cpp
+    src/lequ_api.cpp
+    src/lequ_sign.cpp
 )
+
+target_include_directories(tg_uploader PRIVATE include)
 
 find_package(SQLite3 REQUIRED)
 
@@ -42,4 +62,7 @@ target_link_libraries(tg_uploader PRIVATE
     nlohmann_json::nlohmann_json
     SQLite::SQLite3
     CURL::libcurl
+    OpenSSL::Crypto
+    Threads::Threads
+    crypt
 )

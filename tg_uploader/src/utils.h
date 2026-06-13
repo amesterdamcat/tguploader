@@ -19,3 +19,9 @@ std::string create_cover_thumb(const std::string& orig_jpg, const std::string& l
 
 // Format elapsed seconds as "5s", "1m 23s", "2h 5m 17s"
 std::string fmt_elapsed(double secs);
+
+// Like system() but checks an atomic cancel flag every 100ms; if set,
+// SIGTERM (and then SIGKILL after 2s) the child process. Returns the child
+// exit code, or -1 if killed by us.
+#include <atomic>
+int cancellable_system(const std::string& cmd, std::atomic<bool>& cancel_flag);

@@ -1,4 +1,5 @@
 #include "scanner.h"
+#include "config.h"
 #include <iostream>
 #include <regex>
 #include <filesystem>
@@ -52,6 +53,10 @@ static const std::vector<std::string> platform_keywords = {
     "Chaturbate", "StripChat", "OnlyFans", "ManyVids",
     "Cam4", "Streamate", "LiveJasmin"
 };
+
+static bool same_channel_id(const std::string& a, const std::string& b) {
+    return !a.empty() && !b.empty() && a == b;
+}
 
 static std::vector<std::string> split_string(const std::string& s, char delim) {
     std::vector<std::string> parts;
@@ -406,7 +411,7 @@ void ChannelScanner::reset_checkpoint() {
     update_checkpoint(0, 0, false);
 }
 
-int ChannelScanner::run(int64_t chat_id, bool resume, bool full) {
+int ChannelScanner::run(int64_t chat_id, bool resume, bool full, bool fetch_thumbnails) {
     init_db();
     if (!db_) {
         std::cerr << "\033[34m[SCAN]\033[0m Cannot open database, aborting.\n";
@@ -443,6 +448,9 @@ int ChannelScanner::run(int64_t chat_id, bool resume, bool full) {
     bool done = false;
 
     while (!done) {
+        if (pages == 0) {
+            std::cout << "\033[34m[SCAN]\033[0m Fetching messages...\n";
+        }
         auto result = client_.search_chat_messages(
             chat_id, from_message_id, 100,
             td_api::make_object<td_api::searchMessagesFilterVideo>());
@@ -473,6 +481,12 @@ int ChannelScanner::run(int64_t chat_id, bool resume, bool full) {
 
             if (oldest_in_page == 0 || msg_id < oldest_in_page) {
                 oldest_in_page = msg_id;
+            }
+
+            if (total_scanned % 10000 == 0) {
+                std::cout << "\033[34m[SCAN]\033[0m Progress: "
+                          << total_scanned << " videos scanned, "
+                          << new_records << " new, " << pages << " pages...\n";
             }
 
             // Incremental mode: stop if we already have this record
@@ -522,11 +536,13 @@ int ChannelScanner::run(int64_t chat_id, bool resume, bool full) {
             std::string stem = fs::path(rec.file_name).stem().string();
             parse_filename(stem, rec.model_name, rec.platform, rec.record_date, rec.record_time);
 
-            // Download thumbnail: prefer the uploaded JPG photo after the video
-            rec.thumb_path = download_photo_thumb(chat_id, msg_id, stem, rec.url_id);
-            // Fallback to video's built-in thumbnail
-            if (rec.thumb_path.empty() && video.thumbnail_ && video.thumbnail_->file_) {
-                rec.thumb_path = download_thumb(video.thumbnail_->file_->id_, rec.url_id);
+            if (fetch_thumbnails) {
+                // Download thumbnail: prefer the uploaded JPG photo after the video
+                rec.thumb_path = download_photo_thumb(chat_id, msg_id, stem, rec.url_id);
+                // Fallback to video's built-in thumbnail
+                if (rec.thumb_path.empty() && video.thumbnail_ && video.thumbnail_->file_) {
+                    rec.thumb_path = download_thumb(video.thumbnail_->file_->id_, rec.url_id);
+                }
             }
 
             if (insert_record(rec)) {
@@ -549,9 +565,9 @@ int ChannelScanner::run(int64_t chat_id, bool resume, bool full) {
             from_message_id = result->next_from_message_id_;
         }
 
-        std::printf("\r\033[34m[SCAN]\033[0m %d videos scanned, %d new, %d pages...   ",
-                    total_scanned, new_records, pages);
-        std::fflush(stdout);
+        std::cout << "\033[34m[SCAN]\033[0m Progress: "
+                  << total_scanned << " videos scanned, "
+                  << new_records << " new, " << pages << " pages...\n";
     }
 
     // Mark scan as complete
@@ -559,8 +575,9 @@ int ChannelScanner::run(int64_t chat_id, bool resume, bool full) {
         update_checkpoint(get_checkpoint_oldest_id(), total_scanned, true);
     }
 
-    std::printf("\n\033[34m[SCAN]\033[0m Done. %d total scanned, %d new records inserted.\n",
-                total_scanned, new_records);
+    std::cout << "\033[34m[SCAN]\033[0m Done. " << total_scanned
+              << " total scanned, " << new_records
+              << " new records inserted.\n";
 
     close_db();
     return new_records;
@@ -792,4 +809,80 @@ void record_uploaded_video(const std::string& db_path, const std::string& thumb_
     }
 
     sqlite3_close(db);
+}
+
+ChannelScanResult scan_account_channel(const std::string& account_name,
+                                       bool resume,
+                                       bool full,
+                                       bool fetch_thumbnails) {
+    ChannelScanResult out;
+    out.account_name = account_name;
+    try {
+        auto config = load_account(account_name);
+        out.account_name = config.name;
+        std::cout << "[" << config.name << "] Connecting for scan...\n";
+
+        TdClient client(config);
+        if (!client.login()) {
+            out.error = "not authorized for account '" + config.name + "'";
+            std::cerr << "Error: " << out.error << ". Run login first.\n";
+            return out;
+        }
+
+        std::cout << "[" << config.name << "] Authorized. Finding channel: "
+                  << config.channel_id << "\n";
+
+        int64_t chat_id = client.find_channel(config.channel_id);
+        if (chat_id == 0) {
+            out.error = "channel not found: " + config.channel_id;
+            std::cerr << "Error: " << out.error << "\n";
+            client.close();
+            return out;
+        }
+
+        std::string base = get_base_dir();
+        std::string db_path = base + "/data/scanner.db";
+        std::string thumb_dir = base + "/data/thumbs";
+        fs::create_directories(thumb_dir);
+
+        ChannelScanner scanner(client, db_path, thumb_dir);
+        out.inserted = scanner.run(chat_id, resume, full, fetch_thumbnails);
+        out.ok = true;
+        std::cout << "\033[34m[SCAN]\033[0m Inserted " << out.inserted
+                  << " new records.\n";
+        client.close();
+    } catch (const std::exception& e) {
+        out.error = e.what();
+        std::cerr << "\033[34m[SCAN]\033[0m Failed: " << out.error << "\n";
+    }
+    return out;
+}
+
+ChannelScanResult scan_source_channel_for_backup(const std::string& source_channel_id,
+                                                 bool full,
+                                                 bool fetch_thumbnails) {
+    auto accounts = list_accounts();
+    if (accounts.empty()) {
+        ChannelScanResult out;
+        out.error = "no TDLib accounts configured for pre-backup scan";
+        return out;
+    }
+
+    for (const auto& acc : accounts) {
+        if (same_channel_id(acc.channel_id, source_channel_id)) {
+            return scan_account_channel(acc.name, false, full, fetch_thumbnails);
+        }
+    }
+
+    if (accounts.size() == 1) {
+        std::cout << "\033[33m[SCAN]\033[0m Source channel '" << source_channel_id
+                  << "' does not exactly match account channel '" << accounts[0].channel_id
+                  << "'; using the only configured account: " << accounts[0].name << "\n";
+        return scan_account_channel(accounts[0].name, false, full, fetch_thumbnails);
+    }
+
+    ChannelScanResult out;
+    out.error = "cannot choose scan account for source channel '" + source_channel_id +
+                "'; set the matching channel_id in .account_configs";
+    return out;
 }

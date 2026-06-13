@@ -4,6 +4,8 @@
 #include "scanner.h"
 #include "utils.h"
 #include "video_info.h"
+#include "log_tee.h"     // set_log_channel
+#include "web_server.h"  // g_cancel_botupload, fixbig_is_active()
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -266,6 +268,12 @@ void BotUploader::handle_post_upload(const std::string& path) {
 }
 
 bool BotUploader::upload_single(const std::string& video_path) {
+    // Defer to a concurrently running fix-big — don't race on the file.
+    if (fixbig_is_active(video_path)) {
+        std::cout << "[INFO] Skipping (fix-big active): "
+                  << fs::path(video_path).filename().string() << "\n";
+        return false;
+    }
     struct stat st;
     if (::stat(video_path.c_str(), &st) != 0) {
         std::cerr << "\033[31m[ERROR]\033[0m File not found: " << video_path << "\n";
@@ -275,10 +283,14 @@ bool BotUploader::upload_single(const std::string& video_path) {
 
     if (file_size > BOT_FILE_SIZE_LIMIT) {
         std::string fname = fs::path(video_path).filename().string();
-        std::ofstream(video_path + ".big").close();
+        try {
+            fs::rename(video_path, video_path + ".big");
+        } catch (const std::exception& e) {
+            std::cerr << "\033[31m[ERROR]\033[0m Rename to .big failed: " << e.what() << "\n";
+        }
         std::cerr << "\033[33m[SKIP]\033[0m " << fname
                   << " exceeds Bot API limit (" << format_file_size(file_size)
-                  << " > 2.0 GiB), marked .big\n";
+                  << " > 2.0 GiB), renamed to .big\n";
         return false;
     }
 
@@ -418,6 +430,14 @@ bool BotUploader::upload_with_bot(int bot_idx, const std::string& video_path) {
     // colored prefix for log lines, e.g. "\033[32m[PhoUpload_bot]\033[0m "
     const std::string pfx = std::string(color) + "[" + bot.name + "]\033[0m ";
 
+    // Defer to a concurrently running fix-big.
+    if (fixbig_is_active(video_path)) {
+        std::lock_guard<std::mutex> lk(log_mutex_);
+        std::cout << "[INFO] " << pfx << "Skipping (fix-big active): "
+                  << fs::path(video_path).filename().string() << "\n";
+        return false;
+    }
+
     struct stat st;
     if (::stat(video_path.c_str(), &st) != 0) {
         std::lock_guard<std::mutex> lk(log_mutex_);
@@ -428,11 +448,20 @@ bool BotUploader::upload_with_bot(int bot_idx, const std::string& video_path) {
 
     if (file_size > BOT_FILE_SIZE_LIMIT) {
         std::string fname = fs::path(video_path).filename().string();
-        std::ofstream(video_path + ".big").close();  // marker so scanner skips it next run
+        std::string rename_err;
+        try {
+            fs::rename(video_path, video_path + ".big");
+        } catch (const std::exception& e) {
+            rename_err = e.what();
+        }
         std::lock_guard<std::mutex> lk(log_mutex_);
+        if (!rename_err.empty()) {
+            std::cerr << "\033[31m[ERROR]\033[0m " << pfx
+                      << "Rename to .big failed: " << rename_err << "\n";
+        }
         std::cerr << "\033[33m[SKIP]\033[0m " << pfx << fname
                   << " exceeds Bot API limit (" << format_file_size(file_size)
-                  << " > 2.0 GiB), marked .big\n";
+                  << " > 2.0 GiB), renamed to .big\n";
         return false;
     }
 
@@ -616,7 +645,9 @@ void BotUploader::upload_directory(const std::string& dir_path, bool recursive) 
         std::vector<std::thread> threads;
         for (int i = 0; i < n_bots; i++) {
             threads.emplace_back([&, i]() {
+                set_log_channel("bot-upload");
                 while (true) {
+                    if (g_cancel_botupload.load()) break;
                     std::string vp;
                     {
                         std::lock_guard<std::mutex> lk(queue_mutex);
@@ -636,6 +667,7 @@ void BotUploader::upload_directory(const std::string& dir_path, bool recursive) 
                         std::lock_guard<std::mutex> lk(queue_mutex);
                         if (work_queue.empty()) break;
                     }
+                    if (g_cancel_botupload.load()) break;
                     std::this_thread::sleep_for(std::chrono::seconds(3));
                 }
             });
@@ -672,12 +704,14 @@ void BotUploader::upload_directory(const std::string& dir_path, bool recursive) 
     auto total_start = std::chrono::steady_clock::now();
 
     for (auto& [folder_path, folder_videos] : folder_groups) {
+        if (g_cancel_botupload.load()) { std::cout << "[INFO] Canceled, stopping.\n"; break; }
         std::sort(folder_videos.begin(), folder_videos.end());
         auto folder_start = std::chrono::steady_clock::now();
         std::cout << "[INFO] Processing folder: " << folder_path
                   << " (" << folder_videos.size() << " files)\n";
 
         for (size_t i = 0; i < folder_videos.size(); i++) {
+            if (g_cancel_botupload.load()) { std::cout << "[INFO] Canceled, stopping.\n"; break; }
             const auto& vp = folder_videos[i];
 
             if (upload_single(vp)) {

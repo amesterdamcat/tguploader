@@ -13,6 +13,14 @@
 
 namespace td_api = td::td_api;
 
+struct TdAuthStatus {
+    bool ok = true;
+    bool authorized = false;
+    std::string state = "starting";  // starting | wait_code | wait_password | ready | closed | error
+    std::string error;
+    std::string phone;
+};
+
 class TdClient {
 public:
     explicit TdClient(const AccountConfig& config);
@@ -21,6 +29,13 @@ public:
     // Blocking login (handles auth state machine, reads code/password from stdin)
     bool login();
     bool is_authorized() const { return authorized_; }
+
+    // Non-interactive login for the web UI. start_web_auth() drives TDLib until
+    // it either reaches ready or needs user input. submit_* continues the same
+    // session after the browser provides the code/password.
+    TdAuthStatus start_web_auth(double timeout = 30.0);
+    TdAuthStatus submit_auth_code(const std::string& code, double timeout = 30.0);
+    TdAuthStatus submit_auth_password(const std::string& password, double timeout = 30.0);
 
     // Find channel by username or title, returns chat_id
     int64_t find_channel(const std::string& channel_id);
@@ -83,6 +98,9 @@ private:
     AccountConfig config_;
     bool authorized_ = false;
     bool closed_ = false;
+    bool web_auth_mode_ = false;
+    std::string auth_state_ = "starting";
+    std::string auth_error_;
     uint64_t next_query_id_ = 1;
     int flood_wait_hits_ = 0;  // Incremented each FLOOD_WAIT, read by Uploader
     int flood_wait_total_secs_ = 0;  // Cumulative FLOOD_WAIT seconds
@@ -97,6 +115,8 @@ private:
 
     // Handle authorization state changes
     void handle_auth_state(td_api::object_ptr<td_api::AuthorizationState> state);
+    TdAuthStatus make_auth_status() const;
+    TdAuthStatus pump_auth(double timeout);
 
     // Parse caption markdown into formattedText
     td_api::object_ptr<td_api::formattedText> parse_caption(const std::string& markdown);

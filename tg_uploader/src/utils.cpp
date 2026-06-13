@@ -1,10 +1,15 @@
 #include "utils.h"
 #include <algorithm>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <iostream>
+#include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -128,4 +133,46 @@ std::string create_cover_thumb(const std::string& orig_jpg, const std::string& l
     }
     std::cerr << "\033[33m[WARNING]\033[0m Failed to resize thumbnail, skipping cover\n";
     return "";
+}
+
+// Cancellable wrapper around system(): fork+exec via /bin/sh, poll a flag,
+// SIGTERM then SIGKILL the whole process group on cancel.
+int cancellable_system(const std::string& cmd, std::atomic<bool>& cancel_flag) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        // child — new process group so we can signal ffmpeg + any helpers
+        setpgid(0, 0);
+        execl("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    // parent — poll
+    bool killed = false;
+    bool term_sent = false;
+    auto term_time = std::chrono::steady_clock::time_point::min();
+    while (true) {
+        int status = 0;
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) {
+            if (killed) return -1;
+            if (WIFEXITED(status))    return WEXITSTATUS(status);
+            if (WIFSIGNALED(status))  return -1;
+            return -1;
+        }
+        if (r < 0) return -1;
+
+        if (cancel_flag.load() && !term_sent) {
+            // SIGTERM whole process group to also catch ffmpeg's children
+            ::kill(-pid, SIGTERM);
+            term_sent = true;
+            killed = true;
+            term_time = std::chrono::steady_clock::now();
+        } else if (term_sent &&
+                   std::chrono::steady_clock::now() - term_time > std::chrono::seconds(2)) {
+            // escalate
+            ::kill(-pid, SIGKILL);
+            term_sent = false;   // don't re-send forever
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 }

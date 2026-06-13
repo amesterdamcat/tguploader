@@ -1,0 +1,694 @@
+<div id="app">
+  <div v-if="!token" class="login-page" :class="{'fade-out': loginSuccess}">
+    <!-- Diagonal waterfall background -->
+    <div class="lp-bg-layer" ref="lpBgEl" aria-hidden="true">
+      <div class="lp-bg-inner">
+        <div class="lp-col" v-for="(col, ci) in splashCols" :key="ci"
+             :ref="el => { if(el) lpColEls[ci] = el; }">
+          <template v-for="pass in 2" :key="pass">
+            <img v-for="id in col" :key="`${ci}-${pass}-${id}`"
+              :src="`/api/splash/${id}.jpg`" alt="" loading="lazy"
+              @load="e => e.target.classList.add('lp-loaded')"
+              @click.stop="lpColClick(ci, $event.target)"
+              @dblclick.stop="lpZoomOpen($event.target.src)">
+          </template>
+        </div>
+      </div>
+    </div>
+    <div class="lp-overlay" aria-hidden="true"></div>
+    <div class="lp-grain"   aria-hidden="true"></div>
+
+    <!-- 3D card -->
+    <div class="lp-card-wrap" :class="{'lp-collapse': loginSuccess}">
+      <div class="lp-card" ref="lpCardEl">
+        <div class="lp-card-inner">
+          <div class="lp-brand">
+            <div class="lp-brand-name">Archive</div>
+            <div class="lp-brand-sub">Private Collection</div>
+          </div>
+          <hr class="lp-hr">
+          <form @submit.prevent="doLogin" novalidate>
+            <div class="lp-field">
+              <input type="text" id="lp-user" v-model="loginForm.username"
+                placeholder=" " autocomplete="username" required>
+              <label for="lp-user">Username</label>
+            </div>
+            <div class="lp-field">
+              <input :type="showPw ? 'text' : 'password'" id="lp-pass"
+                v-model="loginForm.password" placeholder=" "
+                autocomplete="current-password" required>
+              <label for="lp-pass">Password</label>
+            </div>
+            <div v-if="loginError" class="lp-err" role="alert">{{ loginError }}</div>
+            <button type="submit" class="lp-btn" :disabled="loginLoading" aria-label="Sign in">
+              <span v-if="!loginLoading">Enter</span>
+              <span v-else class="lp-spinner" aria-label="Authenticating"></span>
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Public stats -->
+    <div class="lp-stats" v-if="splashStats.total_videos">
+      <span>{{ Number(splashStats.total_videos).toLocaleString() }} recordings</span>
+      <span class="lp-stats-sep">·</span>
+      <span>{{ Number(splashStats.total_models).toLocaleString() }} models</span>
+    </div>
+
+    <!-- Zoom overlay — double-click a thumbnail to enlarge -->
+    <div v-if="lpZoomSrc" class="lp-zoom-overlay" @click="lpZoomClose">
+      <img :src="lpZoomSrc" class="lp-zoom-img" alt="" @click.stop>
+    </div>
+  </div>
+
+  <div v-else :class="{'privacy-on': privacyMode}">
+    <div class="header">
+      <div class="header-left">
+        <h1 style="cursor:pointer" @click="goHome">Model Search</h1>
+        <div class="nav-tabs">
+          <div class="nav-tab" :class="{active: currentView === 'search'}" @click="switchView('search')">Search</div>
+          <div class="nav-tab" :class="{active: currentView === 'leaderboard'}" @click="switchView('leaderboard')">Leaderboard</div>
+          <div class="nav-tab" :class="{active: currentView === 'dashboard'}" @click="switchView('dashboard')">Dashboard</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <span class="stats-bar" v-if="stats">
+          {{ stats.total_videos.toLocaleString() }} videos &middot;
+          {{ stats.total_models.toLocaleString() }} models
+          <template v-if="stats.recent_24h > 0">
+            <span class="recent-badge recent-hot">+{{ stats.recent_24h }} / 24h</span>
+          </template>
+          <template v-if="stats.recent_7d > 0">
+            <span class="recent-badge recent-warm">+{{ stats.recent_7d }} / 7d</span>
+          </template>
+        </span>
+        <div class="layout-ctrl">
+          <label>Layout</label>
+          <input class="layout-input" type="number" min="1" max="20" v-model.number="gridCols" @change="onGridColsChange">
+          <span class="layout-x">&times;</span>
+          <input class="layout-input" type="number" min="1" max="20" v-model.number="gridRows" @change="onGridRowsChange">
+        </div>
+        <button class="btn-privacy" :class="{active: privacyMode}" @click="togglePrivacy"
+                :title="privacyMode ? 'Privacy ON - hover to reveal' : 'Privacy OFF'">
+          <span v-html="privacyMode ? '&#128065;&#65039;&#8725; Blur ON' : '&#128065;&#65039; Blur OFF'"></span>
+        </button>
+        <button class="btn btn-sm" @click="logout">Logout</button>
+      </div>
+    </div>
+
+    <!-- SEARCH -->
+    <template v-if="currentView === 'search'">
+      <!-- Live Strip -->
+      <div class="live-strip" v-if="liveModels.length > 0 || liveLoading">
+        <div class="live-strip-header">
+          <div class="live-strip-title">
+            <span class="live-dot" style="display:inline-block;background:#ef4444;width:10px;height:10px;border-radius:50%;flex-shrink:0"></span>
+            LIVE NOW
+          </div>
+          <span class="live-strip-count" v-if="!liveLoading">{{ liveModels.length }} online</span>
+          <button class="live-strip-refresh" @click="loadLiveModels(true)" :disabled="liveLoading">{{ liveLoading ? 'Refreshing…' : 'Refresh' }}</button>
+        </div>
+        <div v-if="liveLoading && liveModels.length === 0" class="live-strip-loading">Checking who's live…</div>
+        <div class="live-strip-scroll" v-else>
+          <div class="live-card" v-for="m in liveModels" :key="m.model_name" @click="openStream(m.model_name)">
+            <div class="live-card-inner">
+              <img class="live-card-thumb"
+                   :src="'https://jpeg.live.mmcdn.com/stream?room='+m.model_name.toLowerCase()+'&t='+liveTsStrip"
+                   @error="$event.target.style.opacity='.15'"
+                   @load="$event.target.style.opacity='1'"
+                   :style="{filter: privacyMode ? 'blur(20px)' : 'none'}">
+              <div class="live-card-badge"><span class="live-dot"></span>LIVE</div>
+              <div class="live-card-status" v-if="m.room_status !== 'public'">{{ m.room_status }}</div>
+            </div>
+            <div class="live-card-name">{{ m.model_name }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="search-section">
+        <div class="search-row">
+          <div class="form-group" style="flex:2; min-width:200px; position:relative;">
+            <label>Model Name</label>
+            <input v-model="search.q" @input="onModelInput" @keyup.enter="selectAndSearch"
+                   @keydown.down.prevent="suggestDown" @keydown.up.prevent="suggestUp"
+                   @blur="hideSuggestSoon" @focus="onSearchFocus"
+                   placeholder="Search model name..." autocomplete="off">
+            <div class="suggest-list" v-if="suggestions.length > 0">
+              <div class="suggest-item" v-for="(s, i) in suggestions" :key="s.model_name"
+                   :class="{active: i === suggestIdx}" @mousedown.prevent="pickSuggestion(s)">
+                <span>{{ s.model_name }}</span>
+                <span class="suggest-count">{{ s.count }}</span>
+              </div>
+            </div>
+            <div class="search-history" v-if="showHistory && searchHistory.length > 0 && suggestions.length === 0">
+              <div class="search-history-item" v-for="(h, i) in searchHistory" :key="i" @mousedown.prevent="pickHistory(h)">
+                <span>{{ h }}</span>
+                <span class="del" @click.stop.prevent="removeHistory(i)">&times;</span>
+              </div>
+            </div>
+          </div>
+          <div class="form-group" style="flex:0 0 160px; min-width:130px;">
+            <label>Platform</label>
+            <select v-model="search.platform" @change="doSearch(1)">
+              <option value="">All Platforms</option>
+              <option v-for="p in platforms" :value="p.platform">{{ p.platform }} ({{ p.count }})</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:0 0 140px; min-width:120px;">
+            <label>Sort</label>
+            <select v-model="search.sort" @change="doSearch(1)">
+              <option value="date_desc">Date (Newest)</option>
+              <option value="date_asc">Date (Oldest)</option>
+              <option value="duration_desc">Duration (Longest)</option>
+              <option value="size_desc">Size (Largest)</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:0 0 120px; min-width:100px;">
+            <label>Min Duration</label>
+            <select v-model="search.duration_min" @change="doSearch(1)">
+              <option value="0">Any</option>
+              <option value="300">5 min+</option>
+              <option value="600">10 min+</option>
+              <option value="1800">30 min+</option>
+              <option value="3600">1 hr+</option>
+              <option value="7200">2 hr+</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:0 0 120px; min-width:100px;">
+            <label>Max Duration</label>
+            <select v-model="search.duration_max" @change="doSearch(1)">
+              <option value="0">Any</option>
+              <option value="300">&lt; 5 min</option>
+              <option value="600">&lt; 10 min</option>
+              <option value="1800">&lt; 30 min</option>
+              <option value="3600">&lt; 1 hr</option>
+              <option value="7200">&lt; 2 hr</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:0 0 150px; min-width:130px;">
+            <label>Date From</label>
+            <input v-model="search.date_from" type="date">
+          </div>
+          <div class="form-group" style="flex:0 0 150px; min-width:130px;">
+            <label>Date To</label>
+            <input v-model="search.date_to" type="date">
+          </div>
+          <div class="tag-filter-wrap form-group" style="flex:0 0 200px; min-width:160px;">
+            <label>Tag</label>
+            <div class="tag-search-wrap" style="position:relative;">
+              <input class="tag-search-input" v-model="tagSearchQ"
+                     @input="onTagSearchInput" @focus="showTagDrop=true"
+                     @blur="hideTagDropSoon"
+                     :placeholder="search.tag ? '#'+search.tag : 'Search tags…'"
+                     autocomplete="off">
+              <div class="tag-search-drop" v-if="showTagDrop && filteredTags.length">
+                <div class="tag-search-item" :class="{active: search.tag===''}"
+                     @mousedown.prevent="pickTag('')">All Tags</div>
+                <div class="tag-search-item" v-for="t in filteredTags" :key="t.tag"
+                     :class="{active: search.tag===t.tag}"
+                     @mousedown.prevent="pickTag(t.tag)">
+                  <span>#{{ t.tag.replace(/_/g,' ') }}</span>
+                  <span class="suggest-count">{{ t.count }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="form-group" style="flex:0 0 auto;">
+            <label style="visibility:hidden">&#8203;</label>
+            <div style="display:flex; gap:.4rem;">
+              <button class="btn" @click="doSearch(1)" :disabled="loading">Search</button>
+              <button class="btn-reset" @click="resetSearch" title="Reset">Reset</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="grid-container">
+        <div v-if="loading" class="loading">Loading...</div>
+        <div v-else-if="videos.length === 0" class="empty-state">No videos found.</div>
+        <div v-else class="video-grid" :style="gridStyle">
+          <div class="video-card" v-for="(v, idx) in videos" :key="v.message_id">
+            <div v-if="v.thumb_path" class="card-thumb-wrap">
+              <img class="card-thumb" :src="'/thumbs/' + v.url_id + '.jpg?token=' + token" loading="lazy"
+                   @click="openLightbox(idx)" @error="$event.target.style.display='none'"
+                   :style="{cursor:'pointer', filter: privacyMode ? 'blur(20px)' : 'none'}"
+                   @mouseover="privacyMode && ($event.target.style.filter='none')"
+                   @mouseleave="privacyMode && ($event.target.style.filter='blur(20px)')">
+              <span v-if="v.thumb_hd" class="badge-hd">HD</span>
+            </div>
+            <div v-else class="card-thumb-placeholder">No Thumbnail</div>
+            <div class="card-body">
+              <div class="card-model" @click="openModelDetail(v.model_name)">{{ v.model_name }}</div>
+              <div class="card-meta">
+                <span :class="badgeClass(v.platform)" v-if="v.platform" class="badge">{{ v.platform }}</span>
+                <span v-if="v.record_date">{{ v.record_date }}</span>
+                <span v-if="v.record_time">{{ v.record_time }}</span>
+                <span v-if="v.duration">{{ fmtDur(v.duration) }}</span>
+                <span v-if="v.width && v.height">{{ v.width }}x{{ v.height }}</span>
+                <span v-if="v.file_size">{{ fmtSize(v.file_size) }}</span>
+              </div>
+              <div v-if="v.model_tags" class="card-tags">
+                <span v-for="t in v.model_tags.split(',').slice(0,5)" :key="t"
+                      class="tag-chip" :class="{active: search.tag === t}"
+                      @click.stop="filterByTag(t)">{{ t.replace(/_/g,' ') }}</span>
+              </div>
+              <div class="card-actions">
+                <span class="card-ago" v-if="v.uploaded_at">{{ timeAgo(v.uploaded_at) }}</span>
+                <a :href="v.tg_link" target="_blank" class="tg-link">View on Telegram</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="pagination" v-if="totalPages > 1">
+        <button @click="doSearch(1)" :disabled="page<=1">First</button>
+        <button @click="doSearch(page-1)" :disabled="page<=1">&laquo; Prev</button>
+        <span class="page-info">
+          Page <input class="page-input" type="number" :value="page" min="1" :max="totalPages"
+                      @keyup.enter="jumpToPage($event)" @blur="jumpToPage($event)"> / {{ totalPages }}
+          ({{ total.toLocaleString() }})
+        </span>
+        <button @click="doSearch(page+1)" :disabled="page>=totalPages">Next &raquo;</button>
+        <button @click="doSearch(totalPages)" :disabled="page>=totalPages">Last</button>
+      </div>
+    </template>
+
+    <!-- LEADERBOARD -->
+    <template v-if="currentView === 'leaderboard'">
+      <div class="lb-container">
+        <div class="res-grid">
+          <div class="res-card" :class="{active: lbResolution===''}" @click="setLbResolution('')">
+            <div class="res-label">ALL</div><div class="res-sub">All Resolutions</div>
+          </div>
+          <div class="res-card" v-for="r in resolutions" :key="r.resolution"
+               :class="{active: lbResolution===r.resolution}" @click="setLbResolution(r.resolution)">
+            <div class="res-label">{{ r.resolution }}</div>
+            <div class="res-sub">{{ r.video_count.toLocaleString() }} videos &middot; {{ r.model_count }} models</div>
+          </div>
+        </div>
+        <div class="lb-toolbar">
+          <div class="sort-tabs">
+            <div class="sort-tab" :class="{active: lbSort==='count'}" @click="setLbSort('count')">By Count</div>
+            <div class="sort-tab" :class="{active: lbSort==='duration'}" @click="setLbSort('duration')">By Duration</div>
+          </div>
+          <div class="sort-tabs" style="margin-left:.5rem;">
+            <div class="sort-tab" :class="{active: lbPeriod===''}" @click="setLbPeriod('')">All Time</div>
+            <div class="sort-tab" :class="{active: lbPeriod==='30d'}" @click="setLbPeriod('30d')">30 Days</div>
+            <div class="sort-tab" :class="{active: lbPeriod==='7d'}" @click="setLbPeriod('7d')">7 Days</div>
+          </div>
+          <span class="stats-bar" v-if="lbTotal>0">{{ lbTotal.toLocaleString() }} models</span>
+          <button class="btn-export" @click="exportLeaderboard">Export CSV</button>
+        </div>
+        <div v-if="lbLoading" class="loading">Loading...</div>
+        <div v-else-if="lbItems.length===0" class="empty-state">No data.</div>
+        <table v-else class="lb-table">
+          <thead><tr>
+            <th class="rank-col">#</th><th>Model</th><th>Videos</th>
+            <th>Total Duration</th><th>Avg Duration</th><th>Total Size</th><th>Date Range</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="item in lbItems" :key="item.model_name">
+              <td class="rank-col" :class="'rank-'+item.rank">
+                <template v-if="item.rank<=3">{{ ['','1st','2nd','3rd'][item.rank] }}</template>
+                <template v-else>{{ item.rank }}</template>
+              </td>
+              <td><span class="lb-model" @click="openModelDetail(item.model_name)">{{ item.model_name }}</span></td>
+              <td class="lb-num">{{ item.video_count.toLocaleString() }}
+                <span class="lb-bar-wrap" v-if="lbSort==='count'"><span class="lb-bar" :style="{width:(item.video_count/lbMaxCount*100)+'%'}"></span></span>
+              </td>
+              <td class="lb-num">{{ fmtDurLong(item.total_duration) }}
+                <span class="lb-bar-wrap" v-if="lbSort==='duration'"><span class="lb-bar" :style="{width:(item.total_duration/lbMaxDuration*100)+'%'}"></span></span>
+              </td>
+              <td class="lb-num">{{ fmtDur(item.avg_duration) }}</td>
+              <td class="lb-num">{{ fmtSize(item.total_size) }}</td>
+              <td class="lb-date">{{ item.first_date||'—' }} ~ {{ item.last_date||'—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="pagination" v-if="lbTotalPages>1">
+          <button @click="loadLeaderboard(1)" :disabled="lbPage<=1">First</button>
+          <button @click="loadLeaderboard(lbPage-1)" :disabled="lbPage<=1">&laquo; Prev</button>
+          <span class="page-info">
+            Page <input class="page-input" type="number" :value="lbPage" min="1" :max="lbTotalPages"
+                        @keyup.enter="jumpToLbPage($event)" @blur="jumpToLbPage($event)"> / {{ lbTotalPages }}
+          </span>
+          <button @click="loadLeaderboard(lbPage+1)" :disabled="lbPage>=lbTotalPages">Next &raquo;</button>
+          <button @click="loadLeaderboard(lbTotalPages)" :disabled="lbPage>=lbTotalPages">Last</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- DASHBOARD -->
+    <template v-if="currentView === 'dashboard'">
+      <div class="dash-container">
+        <div class="dash-range-wrap">
+          <div class="sort-tabs">
+            <div class="sort-tab" :class="{active: dashDays===7}" @click="setDashDays(7)">7 Days</div>
+            <div class="sort-tab" :class="{active: dashDays===14}" @click="setDashDays(14)">14 Days</div>
+            <div class="sort-tab" :class="{active: dashDays===30}" @click="setDashDays(30)">30 Days</div>
+            <div class="sort-tab" :class="{active: dashDays===90}" @click="setDashDays(90)">90 Days</div>
+          </div>
+        </div>
+        <div class="dash-cards" v-if="stats">
+          <div class="dash-card">
+            <div class="dash-card-val">{{ stats.total_videos.toLocaleString() }}</div>
+            <div class="dash-card-label">Total Videos</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-val">{{ stats.total_models.toLocaleString() }}</div>
+            <div class="dash-card-label">Total Models</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-val">{{ fmtDurLong(stats.total_duration) }}</div>
+            <div class="dash-card-label">Total Duration</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-val">{{ fmtSize(stats.total_size) }}</div>
+            <div class="dash-card-label">Total Storage</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-val" style="color:var(--danger)">+{{ stats.recent_24h }}</div>
+            <div class="dash-card-label">Last 24 Hours</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-val" style="color:var(--gold)">+{{ stats.recent_7d }}</div>
+            <div class="dash-card-label">Last 7 Days</div>
+          </div>
+        </div>
+
+        <div class="dash-row">
+          <div class="dash-panel dash-full">
+            <div class="dash-panel-title">Daily Upload Trend ({{ dashDays }} days)</div>
+            <div class="dash-chart-wrap"><canvas id="trendChart"></canvas></div>
+          </div>
+        </div>
+
+        <div class="dash-row">
+          <div class="dash-panel">
+            <div class="dash-panel-title">Platform Distribution</div>
+            <div class="dash-chart-wrap"><canvas id="platformChart"></canvas></div>
+          </div>
+          <div class="dash-panel">
+            <div class="dash-panel-title">Resolution Distribution</div>
+            <div class="dash-chart-wrap"><canvas id="resChart"></canvas></div>
+          </div>
+        </div>
+
+        <div class="dash-row">
+          <div class="dash-panel">
+            <div class="dash-panel-title">Storage by Platform</div>
+            <div class="dash-chart-wrap"><canvas id="storagePlatChart"></canvas></div>
+          </div>
+          <div class="dash-panel">
+            <div class="dash-panel-title">Storage by Resolution</div>
+            <div class="dash-chart-wrap"><canvas id="storageResChart"></canvas></div>
+          </div>
+        </div>
+
+        <div class="dash-row">
+          <div class="dash-panel dash-full">
+            <div class="dash-panel-title">Recording Time Heatmap (Hour vs Day of Week)</div>
+            <div class="heatmap-wrap">
+              <div class="heatmap" v-if="heatmapData">
+                <div></div>
+                <div class="heatmap-hlabel" v-for="h in 24" :key="'h'+h">{{ h-1 }}</div>
+                <template v-for="(dayName, di) in heatmapDays" :key="di">
+                  <div class="heatmap-label">{{ dayName }}</div>
+                  <div class="heatmap-cell" v-for="h in 24" :key="di+'_'+h"
+                       :style="{background: heatColor(heatmapData.matrix[di][h-1])}"
+                       :data-tip="dayName + ' ' + (h-1) + ':00 — ' + heatmapData.matrix[di][h-1] + ' videos'">
+                  </div>
+                </template>
+              </div>
+              <div class="heatmap-legend">
+                <span>Less</span>
+                <span class="heatmap-legend-cell" style="background:rgba(99,102,241,.05)"></span>
+                <span class="heatmap-legend-cell" style="background:rgba(99,102,241,.2)"></span>
+                <span class="heatmap-legend-cell" style="background:rgba(99,102,241,.4)"></span>
+                <span class="heatmap-legend-cell" style="background:rgba(99,102,241,.6)"></span>
+                <span class="heatmap-legend-cell" style="background:rgba(99,102,241,.9)"></span>
+                <span>More</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- LIGHTBOX -->
+    <div class="lightbox" v-if="lightboxIdx !== null" @click="closeLightbox" @wheel.prevent="onLbWheel">
+      <button class="lightbox-close" @click.stop="closeLightbox">&times;</button>
+      <button class="lightbox-nav prev" v-if="lightboxIdx>0" @click.stop="lbPrevFn">&lsaquo;</button>
+      <button class="lightbox-nav next" v-if="lightboxIdx<videos.length-1" @click.stop="lbNextFn">&rsaquo;</button>
+      <div class="lightbox-counter">{{ lightboxIdx+1 }} / {{ videos.length }}</div>
+      <img class="lb-img" :key="lbVideo.message_id" :src="'/thumbs/'+lbVideo.url_id+'.jpg?token='+token" @click.stop
+           :style="{transform:'scale('+lbZoom+') translate('+lbDX+'px,'+lbDY+'px)', filter: privacyMode ? 'blur(30px)' : 'none'}"
+           @mousedown.prevent="onLbDragStart" @dblclick.stop="lbResetZoom"
+           @mouseover="privacyMode && ($event.target.style.filter='none')"
+           @mouseleave="privacyMode && ($event.target.style.filter='blur(30px)')">
+      <div class="lightbox-info" @click.stop>
+        <strong>{{ lbVideo.model_name }}</strong>
+        <span v-if="lbVideo.platform" :class="badgeClass(lbVideo.platform)" class="badge">{{ lbVideo.platform }}</span>
+        <span v-if="lbVideo.record_date">{{ lbVideo.record_date }} {{ lbVideo.record_time }}</span>
+        <span v-if="lbVideo.duration">{{ fmtDur(lbVideo.duration) }}</span>
+        <span v-if="lbVideo.width">{{ lbVideo.width }}x{{ lbVideo.height }}</span>
+        <span v-if="lbVideo.file_size">{{ fmtSize(lbVideo.file_size) }}</span>
+        <a :href="lbVideo.tg_link" target="_blank" class="tg-link">View on Telegram</a>
+      </div>
+    </div>
+
+    <!-- STREAM PLAYER MODAL -->
+    <div class="stream-modal" v-if="streamModel" @click.self="closeStream()">
+      <div class="stream-wrap">
+        <div class="stream-loading" v-if="streamLoading">Loading stream…</div>
+        <template v-else-if="streamData">
+          <video ref="streamVideoEl" class="stream-video" controls autoplay playsinline muted></video>
+          <div class="stream-header">
+            <div>
+              <div class="stream-badge"><span class="live-dot"></span>LIVE</div>
+            </div>
+            <div style="flex:1;min-width:0">
+              <div class="stream-model-name" @click="closeStream(); openModelDetail(streamModel)">{{ streamModel }}</div>
+              <div class="stream-title">{{ streamData.room_title }}</div>
+            </div>
+            <div class="stream-viewers">👁 {{ streamData.num_viewers.toLocaleString() }}</div>
+          </div>
+        </template>
+        <button class="stream-close" @click="closeStream()">&times;</button>
+      </div>
+    </div>
+
+    <!-- MODEL DETAIL -->
+    <template v-if="detailModel">
+      <div class="detail-overlay" @click="closeDetail()"></div>
+      <div class="detail-panel">
+        <button class="detail-close" @click="closeDetail()">&times;</button>
+        <div v-if="detailLoading" class="loading">Loading...</div>
+        <template v-else-if="detailData">
+          <!-- Live thumbnail (auto-refreshes every 5s, hidden if model offline) -->
+          <div class="live-section" v-show="detailLive" :class="{'privacy-on': privacyMode}"
+               style="cursor:pointer" @click="openStream(detailData.model_name)">
+            <img :src="'https://jpeg.live.mmcdn.com/stream?room='+detailData.model_name.toLowerCase()+'&t='+liveTs"
+                 @load="detailLive=true" @error="detailLive=false"
+                 :style="{filter: privacyMode ? 'blur(20px)' : 'none'}"
+                 @mouseover="privacyMode && ($event.target.style.filter='none')"
+                 @mouseleave="privacyMode && ($event.target.style.filter='blur(20px)')">
+            <div class="live-badge"><span class="live-dot"></span>LIVE · 点击播放</div>
+          </div>
+          <div class="detail-header">
+            <img v-if="detailData.thumb_url_id && !detailLive" class="detail-thumb"
+                 :src="'/thumbs/'+detailData.thumb_url_id+'.jpg?token='+token"
+                 :style="{filter: privacyMode ? 'blur(20px)' : 'none'}"
+                 @mouseover="privacyMode && ($event.target.style.filter='none')"
+                 @mouseleave="privacyMode && ($event.target.style.filter='blur(20px)')">
+            <div>
+              <div class="detail-name">{{ detailData.model_name }}</div>
+              <div style="font-size:.8rem;color:var(--muted)">{{ detailData.first_date }} ~ {{ detailData.last_date }}</div>
+            </div>
+          </div>
+          <div class="detail-stat-grid">
+            <div class="detail-stat"><div class="detail-stat-val">{{ detailData.video_count.toLocaleString() }}</div><div class="detail-stat-label">Videos</div></div>
+            <div class="detail-stat"><div class="detail-stat-val">{{ fmtDurLong(detailData.total_duration) }}</div><div class="detail-stat-label">Total Duration</div></div>
+            <div class="detail-stat"><div class="detail-stat-val">{{ fmtDur(detailData.avg_duration) }}</div><div class="detail-stat-label">Avg Duration</div></div>
+            <div class="detail-stat"><div class="detail-stat-val">{{ fmtSize(detailData.total_size) }}</div><div class="detail-stat-label">Total Size</div></div>
+          </div>
+          <div class="detail-section" v-if="detailData.platforms.length">
+            <div class="detail-section-title">Platforms</div>
+            <div class="detail-bar-row" v-for="p in detailData.platforms" :key="p.platform">
+              <span class="detail-bar-label">{{ p.platform }}</span>
+              <span class="detail-bar-track"><span class="detail-bar-fill" :class="badgeClass(p.platform)" :style="{width:(p.count/detailData.video_count*100)+'%'}"></span></span>
+              <span class="detail-bar-count">{{ p.count }}</span>
+            </div>
+          </div>
+          <div class="detail-section" v-if="detailData.resolutions.length">
+            <div class="detail-section-title">Resolutions</div>
+            <div class="detail-bar-row" v-for="r in detailData.resolutions" :key="r.resolution">
+              <span class="detail-bar-label">{{ r.resolution }}</span>
+              <span class="detail-bar-track"><span class="detail-bar-fill" style="background:var(--accent)" :style="{width:(r.count/detailData.video_count*100)+'%'}"></span></span>
+              <span class="detail-bar-count">{{ r.count }}</span>
+            </div>
+          </div>
+          <div class="detail-section" v-if="detailData.timeline.length">
+            <div class="detail-section-title">Monthly Activity</div>
+            <div class="detail-timeline">
+              <div class="detail-tl-bar" v-for="t in detailData.timeline" :key="t.month"
+                   :style="{height:(t.count/tlMax*100)+'%'}" :data-tip="t.month+': '+t.count"></div>
+            </div>
+            <div class="detail-tl-labels"><span v-for="t in detailData.timeline" :key="t.month">{{ t.month.slice(5) }}</span></div>
+          </div>
+          <!-- Profile / Bio section -->
+          <template v-if="detailData.profile">
+            <div class="detail-section" v-if="detailData.profile.room_subject">
+              <div class="detail-section-title">Room Subject</div>
+              <div class="room-subject">{{ detailData.profile.room_subject }}</div>
+            </div>
+            <div class="detail-section" v-if="detailData.profile.tags">
+              <div class="detail-section-title">Live Tags</div>
+              <div class="profile-tags">
+                <span v-for="t in detailData.profile.tags.split(',')" :key="t"
+                      class="tag-chip" :class="{active: search.tag===t}"
+                      @click="filterByTag(t); closeDetail()">
+                  #{{ t.replace(/_/g,' ') }}
+                </span>
+              </div>
+            </div>
+            <div class="detail-section">
+              <div class="detail-section-title" style="display:flex;align-items:center;justify-content:space-between">
+                Profile
+                <button v-if="detailData.profile.about_me" class="btn-sm btn"
+                        style="font-size:.7rem;padding:.15rem .55rem;text-transform:none;letter-spacing:0"
+                        @click="showBioPreview=!showBioPreview">
+                  {{ showBioPreview ? 'Text View' : 'Render Bio' }}
+                </button>
+              </div>
+              <div class="bio-meta">
+                <div class="bio-meta-item" v-if="detailData.profile.real_name">
+                  <span class="bio-meta-label">Name</span>
+                  <span class="bio-meta-val">{{ detailData.profile.real_name }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.display_age">
+                  <span class="bio-meta-label">Age</span>
+                  <span class="bio-meta-val">{{ detailData.profile.display_age }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.location">
+                  <span class="bio-meta-label">Location</span>
+                  <span class="bio-meta-val">{{ detailData.profile.location }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.body_type">
+                  <span class="bio-meta-label">Body Type</span>
+                  <span class="bio-meta-val">{{ detailData.profile.body_type }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.languages">
+                  <span class="bio-meta-label">Languages</span>
+                  <span class="bio-meta-val">{{ detailData.profile.languages }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.follower_count">
+                  <span class="bio-meta-label">Followers</span>
+                  <span class="bio-meta-val">{{ detailData.profile.follower_count.toLocaleString() }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.body_decorations">
+                  <span class="bio-meta-label">Decorations</span>
+                  <span class="bio-meta-val">{{ detailData.profile.body_decorations }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.smoke_drink">
+                  <span class="bio-meta-label">Smoke/Drink</span>
+                  <span class="bio-meta-val">{{ detailData.profile.smoke_drink }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.interested_in">
+                  <span class="bio-meta-label">Interested In</span>
+                  <span class="bio-meta-val">{{ JSON.parse(detailData.profile.interested_in || '[]').join(', ') }}</span>
+                </div>
+                <div class="bio-meta-item" v-if="detailData.profile.last_broadcast">
+                  <span class="bio-meta-label">Last Broadcast</span>
+                  <span class="bio-meta-val">{{ detailData.profile.last_broadcast.slice(0,10) }}</span>
+                </div>
+              </div>
+              <div v-if="detailData.profile.wish_list" style="margin-bottom:.5rem;font-size:.82rem">
+                <span style="color:var(--muted)">Wish List: </span>
+                <span style="word-break:break-word" v-html="detailData.profile.wish_list.replace(/<script[\s\S]*?<\/script>/gi,'')"></span>
+              </div>
+              <template v-if="detailData.profile.about_me">
+                <!-- Rendered bio (blob URL iframe, bypasses Cloudflare rewriting) -->
+                <iframe v-if="showBioPreview"
+                        ref="bioIframeEl"
+                        sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
+                        style="width:100%;min-height:320px;border:1px solid var(--border);border-radius:8px;display:block;background:#fff"
+                        frameborder="0">
+                </iframe>
+                <!-- Text view -->
+                <template v-else>
+                  <div v-if="detailBio.text" class="bio-text" style="margin-bottom:.6rem">
+                    {{ detailBio.text }}
+                  </div>
+                  <!-- Bio images -->
+                  <div v-if="detailBio.images.length" style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.6rem">
+                    <img v-for="(src, i) in detailBio.images" :key="i"
+                         :src="src" loading="lazy"
+                         style="height:80px;width:auto;max-width:100%;border-radius:6px;object-fit:cover;background:var(--border);cursor:pointer"
+                         @click="window.open(src,'_blank')"
+                         @error="$event.target.style.display='none'">
+                  </div>
+                </template>
+                <!-- Social links from API social_medias (structured, reliable) -->
+                <div v-if="parseSocialMedias(detailData.profile.social_medias).length"
+                     style="display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.5rem">
+                  <template v-for="(s, i) in parseSocialMedias(detailData.profile.social_medias)" :key="i">
+                    <a v-if="s.free" :href="s.href" target="_blank" rel="noopener noreferrer" class="bio-link">
+                      <span class="bio-link-icon">{{ s.meta.icon }}</span>
+                      <span class="bio-link-label">{{ s.meta.name }}</span>
+                    </a>
+                    <span v-else class="bio-link locked" :title="s.tokens + ' tokens on Chaturbate'">
+                      <span class="bio-link-icon">🔒</span>
+                      <span class="bio-link-label">{{ s.meta.name }}</span>
+                      <span class="bio-link-tokens">{{ s.tokens }}T</span>
+                    </span>
+                  </template>
+                </div>
+                <!-- Fallback: links parsed from about_me HTML if no social_medias -->
+                <div v-else-if="detailBio.links.length"
+                     style="display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.5rem">
+                  <a v-for="(lk, i) in detailBio.links" :key="i"
+                     :href="lk.realHref" target="_blank" rel="noopener noreferrer" class="bio-link">
+                    <span class="bio-link-icon">{{ bioLinkMeta(lk.realHref).icon }}</span>
+                    <span class="bio-link-label">{{ bioLinkMeta(lk.realHref).name }}</span>
+                  </a>
+                </div>
+              </template>
+            </div>
+          </template>
+          <!-- Photo / Video sets -->
+          <template v-if="detailData.profile && parsePhotoSets(detailData.profile.photo_sets).length">
+            <div class="detail-section">
+              <div class="detail-section-title">
+                Photos &amp; Videos
+                <span style="font-size:.75rem;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">
+                  ({{ parsePhotoSets(detailData.profile.photo_sets).length }})
+                </span>
+              </div>
+              <div class="photosets-grid">
+                <a v-for="ps in parsePhotoSets(detailData.profile.photo_sets)" :key="ps.id"
+                   :href="'https://chaturbate.com/photo_videos/photoset/detail/'+detailData.model_name+'/'+ps.id+'/'"
+                   target="_blank" rel="noopener noreferrer"
+                   class="photoset-card" :class="{'photoset-locked': ps.locked}">
+                  <img class="photoset-cover" :src="ps.cover_url" loading="lazy"
+                       @error="$event.target.src='data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'1\' height=\'1\'/>'"
+                       :style="{filter: privacyMode ? 'blur(12px) brightness(.5)' : ''}">
+                  <div v-if="ps.locked" class="photoset-lock">
+                    {{ ps.fan_club ? '⭐ Fan Club' : '🔒 ' + ps.tokens + 'T' }}
+                  </div>
+                  <div class="photoset-info">
+                    <div class="photoset-name">{{ ps.name }}</div>
+                    <div class="photoset-meta">
+                      <span>{{ ps.is_video ? '🎬 ' + ps.duration : '📷 ' + ps.count + ' pics' }}</span>
+                      <span v-if="!ps.locked" style="color:#4ade80">FREE</span>
+                    </div>
+                  </div>
+                </a>
+              </div>
+            </div>
+          </template>
+          <div class="detail-actions"><button class="btn" style="width:100%" @click="searchFromDetail">Search Videos</button></div>
+        </template>
+      </div>
+    </template>
+  </div>
+</div>

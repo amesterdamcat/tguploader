@@ -1,6 +1,7 @@
 #include "td_client.h"
 #include "utils.h"
 #include <filesystem>
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
 #include <string>
@@ -99,6 +100,10 @@ void TdClient::handle_auth_state(td_api::object_ptr<td_api::AuthorizationState> 
         break;
     }
     case td_api::authorizationStateWaitCode::ID: {
+        if (web_auth_mode_) {
+            auth_state_ = "wait_code";
+            break;
+        }
         std::cout << "Enter verification code for " << config_.phone << ": ";
         std::string code;
         std::getline(std::cin, code);
@@ -106,6 +111,10 @@ void TdClient::handle_auth_state(td_api::object_ptr<td_api::AuthorizationState> 
         break;
     }
     case td_api::authorizationStateWaitPassword::ID: {
+        if (web_auth_mode_) {
+            auth_state_ = "wait_password";
+            break;
+        }
         std::cout << "Enter 2FA password for " << config_.phone << ": ";
         std::string password;
         std::getline(std::cin, password);
@@ -114,6 +123,7 @@ void TdClient::handle_auth_state(td_api::object_ptr<td_api::AuthorizationState> 
     }
     case td_api::authorizationStateReady::ID:
         authorized_ = true;
+        auth_state_ = "ready";
         std::cout << "Authorization successful.\n";
         // Enable automatic storage cleanup to prevent TDLib cache bloat
         send_sync(td_api::make_object<td_api::setOption>(
@@ -122,6 +132,7 @@ void TdClient::handle_auth_state(td_api::object_ptr<td_api::AuthorizationState> 
         break;
     case td_api::authorizationStateClosed::ID:
         closed_ = true;
+        auth_state_ = "closed";
         break;
     default:
         break;
@@ -170,6 +181,71 @@ bool TdClient::login() {
         }
     }
     return authorized_;
+}
+
+TdAuthStatus TdClient::make_auth_status() const {
+    TdAuthStatus s;
+    s.ok = auth_error_.empty();
+    s.authorized = authorized_;
+    s.state = authorized_ ? "ready" : auth_state_;
+    s.error = auth_error_;
+    s.phone = config_.phone;
+    if (closed_ && !authorized_) s.state = "closed";
+    return s;
+}
+
+TdAuthStatus TdClient::pump_auth(double timeout) {
+    auto deadline = Clock::now() + std::chrono::duration<double>(timeout);
+    while (Clock::now() < deadline && !authorized_ && !closed_) {
+        if (auth_state_ == "wait_code" || auth_state_ == "wait_password") break;
+        auto remaining = std::chrono::duration<double>(deadline - Clock::now()).count();
+        auto response = client_manager_.receive(std::max(0.1, std::min(1.0, remaining)));
+        if (!response.object) continue;
+        if (response.request_id == 0) {
+            process_update(std::move(response.object));
+        } else if (response.object->get_id() == td_api::error::ID) {
+            auto& err = static_cast<td_api::error&>(*response.object);
+            auth_error_ = err.message_;
+            auth_state_ = "error";
+            break;
+        }
+    }
+    return make_auth_status();
+}
+
+TdAuthStatus TdClient::start_web_auth(double timeout) {
+    web_auth_mode_ = true;
+    auth_error_.clear();
+    auth_state_ = "starting";
+    return pump_auth(timeout);
+}
+
+TdAuthStatus TdClient::submit_auth_code(const std::string& code, double timeout) {
+    web_auth_mode_ = true;
+    auth_error_.clear();
+    auto result = send_sync(td_api::make_object<td_api::checkAuthenticationCode>(code), 30.0);
+    if (result && result->get_id() == td_api::error::ID) {
+        auto& err = static_cast<td_api::error&>(*result);
+        auth_error_ = err.message_;
+        auth_state_ = "wait_code";
+        return make_auth_status();
+    }
+    auth_state_ = "starting";
+    return pump_auth(timeout);
+}
+
+TdAuthStatus TdClient::submit_auth_password(const std::string& password, double timeout) {
+    web_auth_mode_ = true;
+    auth_error_.clear();
+    auto result = send_sync(td_api::make_object<td_api::checkAuthenticationPassword>(password), 30.0);
+    if (result && result->get_id() == td_api::error::ID) {
+        auto& err = static_cast<td_api::error&>(*result);
+        auth_error_ = err.message_;
+        auth_state_ = "wait_password";
+        return make_auth_status();
+    }
+    auth_state_ = "starting";
+    return pump_auth(timeout);
 }
 
 int64_t TdClient::find_channel(const std::string& channel_id) {

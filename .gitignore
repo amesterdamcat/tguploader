@@ -1,11 +1,23 @@
-# Only tg_uploader/ is tracked — ignore everything else at root
+# Track tg_uploader/ and the Vue frontend source; ignore other root data.
 /*
 !/tg_uploader/
+!/web/
+/web/*
+!/web/lequ-app/
+/web/lequ-app/*
+!/web/lequ-app/src/
+!/web/lequ-app/src/**
+!/web/lequ-app/*.html
+!/web/lequ-app/package.json
+!/web/lequ-app/package-lock.json
+!/web/lequ-app/vite.config.js
 !.gitignore
 !LICENSE
 
 # Build output
 tg_uploader/build/
+web/lequ-app/node_modules/
+web/static/
 
 # Temporary files
 *.tmp
